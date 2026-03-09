@@ -1,8 +1,6 @@
 export interface Env {
   DB: D1Database;
   PURCHASE_TIMEOUT: DurableObjectNamespace;
-  LITHIC_API_KEY: string;
-  LITHIC_WEBHOOK_SECRET: string;
   FEISHU_APP_ID: string;
   FEISHU_APP_SECRET: string;
   FEISHU_ENCRYPT_KEY: string;
@@ -16,8 +14,9 @@ export interface Env {
 export type TransactionStatus =
   | "pending"
   | "approved"
-  | "denied"
+  | "qr_submitted"
   | "completed"
+  | "denied"
   | "failed"
   | "expired";
 
@@ -26,7 +25,6 @@ export interface Agent {
   name: string;
   api_key: string;
   wallet_id: string;
-  card_token: string;
   chat_id: string;
   created_at: string;
 }
@@ -48,8 +46,7 @@ export interface Transaction {
   merchant: string;
   reason: string;
   status: TransactionStatus;
-  card_token: string | null;
-  lithic_txn_id: string | null;
+  qr_image_key: string | null;
   feishu_message_id: string | null;
   requested_at: string;
   approved_at: string | null;

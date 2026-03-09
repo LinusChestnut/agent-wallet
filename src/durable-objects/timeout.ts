@@ -1,12 +1,11 @@
 import { Env } from "../types";
 import { getTransaction, updateTransactionStatus } from "../db/queries";
-import { updateCardState } from "../services/lithic";
-import { updateCardStatus } from "../services/feishu";
+import { updateCardStatus, sendNotification } from "../services/feishu";
 
 interface TimeoutState {
   transactionId: string;
-  cardToken: string;
   agentName: string;
+  agentChatId?: string;
   merchant: string;
   amount: number;
   currency: string;
@@ -52,18 +51,9 @@ export class PurchaseTimeout implements DurableObject {
     const txn = await getTransaction(this.env.DB, data.transactionId);
     if (!txn) return;
 
-    // Only expire if still pending or approved (not yet used)
-    if (txn.status === "pending" || txn.status === "approved") {
+    // Only expire if still pending, approved, or qr_submitted
+    if (txn.status === "pending" || txn.status === "approved" || txn.status === "qr_submitted") {
       await updateTransactionStatus(this.env.DB, data.transactionId, "expired");
-
-      // Re-pause the card if it was unpaused
-      if (txn.status === "approved") {
-        try {
-          await updateCardState(this.env.LITHIC_API_KEY, data.cardToken, "PAUSED");
-        } catch {
-          // Best effort — card might already be paused
-        }
-      }
 
       // Update Feishu card
       if (data.feishuMessageId) {
@@ -80,6 +70,20 @@ export class PurchaseTimeout implements DurableObject {
               currency: data.currency,
               reason: data.reason,
             }
+          );
+        } catch {
+          // Best effort
+        }
+      }
+
+      // Notify agent's chat channel
+      if (data.agentChatId) {
+        try {
+          await sendNotification(
+            this.env.FEISHU_APP_ID,
+            this.env.FEISHU_APP_SECRET,
+            data.agentChatId,
+            `Purchase request expired.\nTransaction: ${data.transactionId}\nMerchant: ${data.merchant}\nAmount: ${data.amount} ${data.currency}\n\n⚠️ Verify status via get_purchase_status before taking action.`
           );
         } catch {
           // Best effort

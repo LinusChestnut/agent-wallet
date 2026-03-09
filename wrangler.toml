@@ -5,11 +5,9 @@ compatibility_date = "2025-03-01"
 [vars]
 LOW_BALANCE_THRESHOLD = "10"
 REQUEST_TIMEOUT_MINUTES = "10"
-DAILY_SPEND_CAP = "100"
+DAILY_SPEND_CAP = "500"
 
 # Secrets (set via `wrangler secret put`):
-# LITHIC_API_KEY           — Lithic API key (sandbox- prefix for sandbox)
-# LITHIC_WEBHOOK_SECRET    — Lithic webhook signing secret (whsec_...)
 # FEISHU_APP_ID            — Feishu bot app ID
 # FEISHU_APP_SECRET        — Feishu bot app secret
 # FEISHU_ENCRYPT_KEY       — Feishu encrypt key (for signature verification)

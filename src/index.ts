@@ -1,8 +1,6 @@
 import { Env } from "./types";
 import { handleMcp } from "./mcp";
 import { handleFeishuWebhook } from "./webhooks/feishu";
-import { handleLithicWebhook } from "./webhooks/lithic";
-import { handleLithicASA } from "./webhooks/lithic-asa";
 import { handleAdmin } from "./admin";
 
 export { PurchaseTimeout } from "./durable-objects/timeout";
@@ -26,21 +24,13 @@ export default {
     try {
       let response: Response;
 
-      // MCP endpoint — agent-facing (chat_id comes from agent config, not URL)
+      // MCP endpoint — agent-facing
       if (path === "/mcp") {
         response = await handleMcp(request, env);
       }
       // Feishu card callback
       else if (path === "/webhook/feishu") {
         response = await handleFeishuWebhook(request, env);
-      }
-      // Lithic transaction webhook
-      else if (path === "/webhook/lithic") {
-        response = await handleLithicWebhook(request, env);
-      }
-      // Lithic Authorization Stream (real-time auth decisioning)
-      else if (path === "/webhook/lithic-asa") {
-        response = await handleLithicASA(request, env);
       }
       // Admin endpoints
       else if (path.startsWith("/admin")) {
@@ -50,7 +40,7 @@ export default {
       else if (path === "/" || path === "/health") {
         response = Response.json({
           service: "agent-wallet",
-          version: "0.2.0",
+          version: "0.3.0",
           status: "ok",
         });
       } else {

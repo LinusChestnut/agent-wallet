@@ -6,7 +6,6 @@ import {
   updateWalletBalance,
   getAgentById,
 } from "./db/queries";
-import { createCard } from "./services/lithic";
 
 function unauthorized(): Response {
   return new Response("Unauthorized", { status: 401 });
@@ -39,13 +38,6 @@ export async function handleAdmin(
       return Response.json({ error: "name and chat_id are required" }, { status: 400 });
     }
 
-    // Create Lithic virtual card (paused)
-    const card = await createCard(env.LITHIC_API_KEY, {
-      type: "VIRTUAL",
-      spendLimit: parseFloat(env.DAILY_SPEND_CAP),
-      memo: `agent-wallet: ${body.name}`,
-    });
-
     const agentId = crypto.randomUUID();
     const walletId = crypto.randomUUID();
     const apiKey = `aw_${crypto.randomUUID().replace(/-/g, "")}`;
@@ -55,7 +47,6 @@ export async function handleAdmin(
       name: body.name,
       api_key: apiKey,
       wallet_id: walletId,
-      card_token: card.token,
       chat_id: body.chat_id!,
       created_at: new Date().toISOString(),
     };
@@ -64,7 +55,7 @@ export async function handleAdmin(
       id: walletId,
       agent_id: agentId,
       balance: body.initial_balance ?? 0,
-      currency: body.currency ?? "USD",
+      currency: body.currency ?? "CNY",
       created_at: new Date().toISOString(),
     };
 
@@ -74,7 +65,7 @@ export async function handleAdmin(
       agent_id: agentId,
       name: body.name,
       api_key: apiKey,
-      email: `Agent registered. Use this API key as Bearer token for MCP calls.`,
+      message: "Agent registered. Use this API key as Bearer token for MCP calls.",
       wallet: {
         id: walletId,
         balance: wallet.balance,

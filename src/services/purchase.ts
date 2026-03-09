@@ -2,21 +2,21 @@ import { Env, Transaction } from "../types";
 import {
   createTransaction,
   getTransaction,
+  getAgentById,
   getWalletByAgentId,
   getDailySpend,
   updateTransactionStatus,
   updateWalletBalance,
 } from "../db/queries";
-import { updateCardState, updateCardSpendLimit, getCardDetails } from "./lithic";
-import { sendApprovalCard, updateCardStatus } from "./feishu";
+import { sendApprovalCard, sendQrCard, sendNotification, updateCardStatus, uploadImage } from "./feishu";
 
 export async function requestPurchase(
   env: Env,
-  agent: { id: string; name: string; card_token: string },
+  agent: { id: string; name: string },
   chatId: string,
   params: { merchant: string; amount: number; currency?: string; reason?: string }
 ): Promise<{ transactionId: string }> {
-  const currency = params.currency ?? "USD";
+  const currency = params.currency ?? "CNY";
   const reason = params.reason ?? "";
 
   const wallet = await getWalletByAgentId(env.DB, agent.id);
@@ -46,15 +46,14 @@ export async function requestPurchase(
     merchant: params.merchant,
     reason,
     status: "pending",
-    card_token: agent.card_token,
-    lithic_txn_id: null,
+    qr_image_key: null,
     feishu_message_id: null,
     requested_at: new Date().toISOString(),
     approved_at: null,
     completed_at: null,
   };
 
-  // Send Feishu approval card
+  // Send Feishu approval card to the user
   const messageId = await sendApprovalCard(
     env.FEISHU_APP_ID,
     env.FEISHU_APP_SECRET,
@@ -80,8 +79,8 @@ export async function requestPurchase(
     method: "POST",
     body: JSON.stringify({
       transactionId: txnId,
-      cardToken: agent.card_token,
       agentName: agent.name,
+      agentChatId: chatId,
       merchant: params.merchant,
       amount: params.amount,
       currency,
@@ -94,6 +93,11 @@ export async function requestPurchase(
   return { transactionId: txnId };
 }
 
+/**
+ * Handle user approval/denial from Feishu callback.
+ * On approval, sends a notification to the agent's chat channel
+ * so the agent wakes up and proceeds with checkout.
+ */
 export async function handleApproval(
   env: Env,
   transactionId: string,
@@ -102,6 +106,8 @@ export async function handleApproval(
   const txn = await getTransaction(env.DB, transactionId);
   if (!txn) throw new Error("Transaction not found");
   if (txn.status !== "pending") throw new Error(`Transaction is ${txn.status}, not pending`);
+
+  const agent = await getAgentById(env.DB, txn.agent_id);
 
   if (!approved) {
     await updateTransactionStatus(env.DB, transactionId, "denied");
@@ -114,46 +120,110 @@ export async function handleApproval(
     // Update Feishu card
     if (txn.feishu_message_id) {
       await updateCardStatus(env.FEISHU_APP_ID, env.FEISHU_APP_SECRET, txn.feishu_message_id, "denied", {
-        agentName: "", // Will be fetched if needed, keeping simple for now
+        agentName: agent?.name ?? "",
         merchant: txn.merchant,
         amount: txn.amount,
         currency: txn.currency,
         reason: txn.reason,
       });
     }
+
+    // Notify agent's chat channel that the purchase was denied
+    if (agent?.chat_id) {
+      await sendNotification(
+        env.FEISHU_APP_ID,
+        env.FEISHU_APP_SECRET,
+        agent.chat_id,
+        `Purchase denied.\nTransaction: ${transactionId}\nMerchant: ${txn.merchant}\nAmount: ${txn.amount} ${txn.currency}\n\n⚠️ Verify status via get_purchase_status before taking action.`
+      );
+    }
+
     return;
   }
 
-  // Approved — unpause card with spend limit matching the transaction amount
-  const amountCents = Math.round(txn.amount * 100);
-  await updateCardSpendLimit(env.LITHIC_API_KEY, txn.card_token!, amountCents);
-  await updateCardState(env.LITHIC_API_KEY, txn.card_token!, "OPEN");
-
+  // Approved
   await updateTransactionStatus(env.DB, transactionId, "approved", {
     approved_at: new Date().toISOString(),
   });
 
   if (txn.feishu_message_id) {
     await updateCardStatus(env.FEISHU_APP_ID, env.FEISHU_APP_SECRET, txn.feishu_message_id, "approved", {
-      agentName: "",
+      agentName: agent?.name ?? "",
       merchant: txn.merchant,
       amount: txn.amount,
       currency: txn.currency,
       reason: txn.reason,
     });
   }
+
+  // Notify agent's chat channel — this is the wake signal
+  if (agent?.chat_id) {
+    await sendNotification(
+      env.FEISHU_APP_ID,
+      env.FEISHU_APP_SECRET,
+      agent.chat_id,
+      `Purchase approved by owner.\nTransaction: ${transactionId}\nMerchant: ${txn.merchant}\nAmount: ${txn.amount} ${txn.currency}\n\n⚠️ Verify status via get_purchase_status before proceeding.`
+    );
+  }
 }
 
+/**
+ * Agent submits a payment QR code. The QR is uploaded to Feishu
+ * and sent to the user for scanning.
+ */
+export async function submitPaymentQr(
+  env: Env,
+  transactionId: string,
+  agentId: string,
+  qrImageBase64: string
+): Promise<void> {
+  const txn = await getTransaction(env.DB, transactionId);
+  if (!txn) throw new Error("Transaction not found");
+  if (txn.agent_id !== agentId) throw new Error("Not your transaction");
+  if (txn.status !== "approved") throw new Error(`Transaction is ${txn.status}, not approved`);
+
+  const agent = await getAgentById(env.DB, agentId);
+  if (!agent) throw new Error("Agent not found");
+
+  // Decode base64 QR image and upload to Feishu
+  const imageData = Uint8Array.from(atob(qrImageBase64), (c) => c.charCodeAt(0));
+  const imageKey = await uploadImage(env.FEISHU_APP_ID, env.FEISHU_APP_SECRET, imageData);
+
+  // Send QR card to the user's chat
+  await sendQrCard(
+    env.FEISHU_APP_ID,
+    env.FEISHU_APP_SECRET,
+    agent.chat_id,
+    {
+      id: transactionId,
+      agentName: agent.name,
+      merchant: txn.merchant,
+      amount: txn.amount,
+      currency: txn.currency,
+    },
+    imageKey
+  );
+
+  await updateTransactionStatus(env.DB, transactionId, "qr_submitted", {
+    qr_image_key: imageKey,
+  });
+}
+
+/**
+ * Agent confirms that the payment went through on the merchant side.
+ * Deducts the amount from the wallet.
+ */
 export async function confirmPurchase(
   env: Env,
   transactionId: string
 ): Promise<void> {
   const txn = await getTransaction(env.DB, transactionId);
   if (!txn) throw new Error("Transaction not found");
-  if (txn.status !== "approved") throw new Error(`Transaction is ${txn.status}, not approved`);
+  if (txn.status !== "approved" && txn.status !== "qr_submitted") {
+    throw new Error(`Transaction is ${txn.status}, expected approved or qr_submitted`);
+  }
 
-  // Re-pause card
-  await updateCardState(env.LITHIC_API_KEY, txn.card_token!, "PAUSED");
+  const agent = await getAgentById(env.DB, txn.agent_id);
 
   // Deduct from wallet
   const wallet = await getWalletByAgentId(env.DB, txn.agent_id);
@@ -162,9 +232,13 @@ export async function confirmPurchase(
 
     // Check low balance threshold
     const threshold = parseFloat(env.LOW_BALANCE_THRESHOLD);
-    if (wallet.balance - txn.amount < threshold) {
-      const { sendNotification } = await import("./feishu");
-      // We'd need a chat ID stored somewhere — for now, skip
+    if (wallet.balance - txn.amount < threshold && agent?.chat_id) {
+      await sendNotification(
+        env.FEISHU_APP_ID,
+        env.FEISHU_APP_SECRET,
+        agent.chat_id,
+        `⚠️ Low balance warning: ${wallet.balance - txn.amount} ${wallet.currency} remaining.`
+      );
     }
   }
 
@@ -176,11 +250,9 @@ export async function confirmPurchase(
   const doId = env.PURCHASE_TIMEOUT.idFromName(transactionId);
   const doStub = env.PURCHASE_TIMEOUT.get(doId);
   await doStub.fetch("https://do/cancel", { method: "POST" });
-
-  // Update Feishu card
   if (txn.feishu_message_id) {
     await updateCardStatus(env.FEISHU_APP_ID, env.FEISHU_APP_SECRET, txn.feishu_message_id, "completed", {
-      agentName: "",
+      agentName: agent?.name ?? "",
       merchant: txn.merchant,
       amount: txn.amount,
       currency: txn.currency,
@@ -189,16 +261,18 @@ export async function confirmPurchase(
   }
 }
 
+/**
+ * Agent cancels an approved purchase.
+ */
 export async function cancelPurchase(
   env: Env,
   transactionId: string
 ): Promise<void> {
   const txn = await getTransaction(env.DB, transactionId);
   if (!txn) throw new Error("Transaction not found");
-  if (txn.status !== "approved") throw new Error(`Transaction is ${txn.status}, not approved`);
-
-  // Re-pause card
-  await updateCardState(env.LITHIC_API_KEY, txn.card_token!, "PAUSED");
+  if (txn.status !== "approved" && txn.status !== "qr_submitted") {
+    throw new Error(`Transaction is ${txn.status}, expected approved or qr_submitted`);
+  }
 
   await updateTransactionStatus(env.DB, transactionId, "failed");
 
@@ -207,26 +281,14 @@ export async function cancelPurchase(
   const doStub = env.PURCHASE_TIMEOUT.get(doId);
   await doStub.fetch("https://do/cancel", { method: "POST" });
 
+  const agent = await getAgentById(env.DB, txn.agent_id);
   if (txn.feishu_message_id) {
     await updateCardStatus(env.FEISHU_APP_ID, env.FEISHU_APP_SECRET, txn.feishu_message_id, "failed", {
-      agentName: "",
+      agentName: agent?.name ?? "",
       merchant: txn.merchant,
       amount: txn.amount,
       currency: txn.currency,
       reason: txn.reason,
     });
   }
-}
-
-export async function getCardDetailsForTransaction(
-  env: Env,
-  transactionId: string,
-  agentId: string
-): Promise<{ pan: string; exp_month: string; exp_year: string; cvv: string }> {
-  const txn = await getTransaction(env.DB, transactionId);
-  if (!txn) throw new Error("Transaction not found");
-  if (txn.agent_id !== agentId) throw new Error("Not your transaction");
-  if (txn.status !== "approved") throw new Error(`Transaction is ${txn.status}, not approved`);
-
-  return getCardDetails(env.LITHIC_API_KEY, txn.card_token!);
 }

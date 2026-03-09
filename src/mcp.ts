@@ -5,27 +5,25 @@ import {
   getTransactionsByWallet,
   getTransaction,
   writeAuditLog,
-  createCardDetailToken,
-  consumeCardDetailToken,
 } from "./db/queries";
 import {
   requestPurchase,
+  submitPaymentQr,
   confirmPurchase,
   cancelPurchase,
-  getCardDetailsForTransaction,
 } from "./services/purchase";
 
 const TOOLS = [
   {
     name: "request_purchase",
     description:
-      "Request approval to make a purchase. Sends a notification to the owner for approval. Returns a transaction ID to track the request.",
+      "Request approval to make a purchase. Sends a notification to the owner for approval. Returns a transaction ID to track the request. The owner will tap Approve when they're ready — you'll receive a message in your chat channel when approved.",
     inputSchema: {
       type: "object",
       properties: {
         merchant: { type: "string", description: "Merchant/store name" },
-        amount: { type: "number", description: "Purchase amount (exact amount that will be charged)" },
-        currency: { type: "string", description: "Currency code (default: USD)" },
+        amount: { type: "number", description: "Purchase amount" },
+        currency: { type: "string", description: "Currency code (default: CNY)" },
         reason: { type: "string", description: "Why you need to make this purchase" },
       },
       required: ["merchant", "amount"],
@@ -34,7 +32,7 @@ const TOOLS = [
   {
     name: "get_purchase_status",
     description:
-      "Check the status of a purchase request. Returns: pending, approved, denied, completed, failed, or expired.",
+      "Check the status of a purchase request. Returns: pending, approved, qr_submitted, completed, denied, failed, or expired. IMPORTANT: Always call this to verify status before acting on chat notifications.",
     inputSchema: {
       type: "object",
       properties: {
@@ -44,33 +42,22 @@ const TOOLS = [
     },
   },
   {
-    name: "get_card_details",
+    name: "submit_payment_qr",
     description:
-      "Get a one-time token to retrieve card details (PAN, expiry, CVV) for an approved purchase. The token can only be used once and expires in 5 minutes.",
+      "Submit a payment QR code for the user to scan. The QR code image is sent to the owner via Feishu. Only call this after the purchase is approved and you have navigated to the merchant checkout page.",
     inputSchema: {
       type: "object",
       properties: {
         transaction_id: { type: "string", description: "Transaction ID of the approved purchase" },
+        qr_image: { type: "string", description: "Base64-encoded PNG image of the payment QR code" },
       },
-      required: ["transaction_id"],
-    },
-  },
-  {
-    name: "redeem_card_token",
-    description:
-      "Redeem a one-time token to get the actual card details. This token can only be used once.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        token: { type: "string", description: "One-time token from get_card_details" },
-      },
-      required: ["token"],
+      required: ["transaction_id", "qr_image"],
     },
   },
   {
     name: "confirm_purchase",
     description:
-      "Confirm that a purchase was completed successfully. This re-pauses the card and deducts the exact approved amount from your wallet balance.",
+      "Confirm that the payment was completed successfully (merchant page shows success). Deducts the amount from your wallet balance.",
     inputSchema: {
       type: "object",
       properties: {
@@ -82,7 +69,7 @@ const TOOLS = [
   {
     name: "cancel_purchase",
     description:
-      "Cancel an approved purchase that you no longer need. This re-pauses the card without deducting from your balance.",
+      "Cancel an approved purchase that you no longer need. No charge is applied to your wallet.",
     inputSchema: {
       type: "object",
       properties: {
@@ -154,7 +141,7 @@ export async function handleMcp(
       mcpResult(id, {
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "agent-wallet", version: "0.2.0" },
+        serverInfo: { name: "agent-wallet", version: "0.3.0" },
       })
     );
   }
@@ -190,7 +177,6 @@ export async function handleMcp(
         if (!merchant || !amount) {
           return Response.json(mcpError(id, -32602, "merchant and amount are required"));
         }
-        // Use chat_id from agent config, NOT from the request
         const result = await requestPurchase(env, agent, agent.chat_id, {
           merchant,
           amount,
@@ -202,13 +188,13 @@ export async function handleMcp(
           agentId: agent.id,
           transactionId: result.transactionId,
           action: "request_purchase",
-          detail: `merchant=${merchant} amount=${amount} ${currency ?? "USD"}`,
+          detail: `merchant=${merchant} amount=${amount} ${currency ?? "CNY"}`,
           ipAddress: clientIp,
         });
 
         return Response.json(
           mcpResult(id, textContent(
-            `Purchase request submitted!\nTransaction ID: ${result.transactionId}\nStatus: pending — waiting for owner approval.\n\nUse get_purchase_status to check if approved, then get_card_details to retrieve a one-time card token.`
+            `Purchase request submitted!\nTransaction ID: ${result.transactionId}\nStatus: pending — waiting for owner approval.\n\nYou will receive a notification in your chat when the owner approves or denies. Use get_purchase_status to verify the status before proceeding.`
           ))
         );
       }
@@ -232,88 +218,28 @@ export async function handleMcp(
         );
       }
 
-      case "get_card_details": {
-        const { transaction_id } = args as { transaction_id: string };
-        if (!transaction_id) {
-          return Response.json(mcpError(id, -32602, "transaction_id is required"));
-        }
-        // Verify transaction belongs to agent and is approved
-        const txn = await getTransaction(env.DB, transaction_id);
-        if (!txn) {
-          return Response.json(mcpError(id, -32000, "Transaction not found"));
-        }
-        if (txn.agent_id !== agent.id) {
-          return Response.json(mcpError(id, -32000, "Not your transaction"));
-        }
-        if (txn.status !== "approved") {
-          return Response.json(mcpError(id, -32000, `Transaction is ${txn.status}, not approved`));
+      case "submit_payment_qr": {
+        const { transaction_id, qr_image } = args as {
+          transaction_id: string;
+          qr_image: string;
+        };
+        if (!transaction_id || !qr_image) {
+          return Response.json(mcpError(id, -32602, "transaction_id and qr_image are required"));
         }
 
-        // Issue a one-time token instead of returning card details directly
-        const token = await createCardDetailToken(env.DB, transaction_id, agent.id);
+        await submitPaymentQr(env, transaction_id, agent.id, qr_image);
 
         await writeAuditLog(env.DB, {
           agentId: agent.id,
           transactionId: transaction_id,
-          action: "card_token_issued",
-          detail: `one-time token created`,
+          action: "submit_payment_qr",
+          detail: "QR code sent to owner for scanning",
           ipAddress: clientIp,
         });
 
         return Response.json(
           mcpResult(id, textContent(
-            `One-time card token issued.\nToken: ${token}\nExpires in 5 minutes. Use redeem_card_token to get the actual card details.\n\nThis token can only be used ONCE.`
-          ))
-        );
-      }
-
-      case "redeem_card_token": {
-        const { token } = args as { token: string };
-        if (!token) {
-          return Response.json(mcpError(id, -32602, "token is required"));
-        }
-
-        const consumed = await consumeCardDetailToken(env.DB, token);
-        if (!consumed) {
-          await writeAuditLog(env.DB, {
-            agentId: agent.id,
-            action: "card_token_redeem_failed",
-            detail: `token=${token} — expired, already used, or invalid`,
-            ipAddress: clientIp,
-          });
-          return Response.json(
-            mcpError(id, -32000, "Token is invalid, expired, or already used.")
-          );
-        }
-
-        if (consumed.agentId !== agent.id) {
-          await writeAuditLog(env.DB, {
-            agentId: agent.id,
-            transactionId: consumed.transactionId,
-            action: "card_token_redeem_wrong_agent",
-            detail: `agent ${agent.id} tried to redeem token belonging to ${consumed.agentId}`,
-            ipAddress: clientIp,
-          });
-          return Response.json(mcpError(id, -32000, "Token does not belong to you."));
-        }
-
-        const details = await getCardDetailsForTransaction(
-          env,
-          consumed.transactionId,
-          agent.id
-        );
-
-        await writeAuditLog(env.DB, {
-          agentId: agent.id,
-          transactionId: consumed.transactionId,
-          action: "card_details_retrieved",
-          detail: `PAN ending ${details.pan.slice(-4)}`,
-          ipAddress: clientIp,
-        });
-
-        return Response.json(
-          mcpResult(id, textContent(
-            `Card details for this transaction:\nPAN: ${details.pan}\nExpiry: ${details.exp_month}/${details.exp_year}\nCVV: ${details.cvv}\n\nIMPORTANT: The charge must be EXACTLY ${(await getTransaction(env.DB, consumed.transactionId))?.amount} ${(await getTransaction(env.DB, consumed.transactionId))?.currency}. Any other amount will be declined.\n\nCall confirm_purchase when done, or cancel_purchase to abort.`
+            `QR code sent to owner!\nThe owner should scan it with Alipay or WeChat Pay.\n\nWait for the merchant page to confirm payment, then call confirm_purchase.\nIf the QR expires, you can call submit_payment_qr again with a fresh QR code.`
           ))
         );
       }
@@ -333,7 +259,7 @@ export async function handleMcp(
         });
 
         return Response.json(
-          mcpResult(id, textContent("Purchase confirmed. Card re-paused, amount deducted from wallet."))
+          mcpResult(id, textContent("Purchase confirmed. Amount deducted from wallet."))
         );
       }
 
@@ -352,7 +278,7 @@ export async function handleMcp(
         });
 
         return Response.json(
-          mcpResult(id, textContent("Purchase cancelled. Card re-paused, no charge applied."))
+          mcpResult(id, textContent("Purchase cancelled. No charge applied."))
         );
       }
 
@@ -378,7 +304,7 @@ export async function handleMcp(
         }
         const lines = txns.map(
           (t) =>
-            `${t.requested_at} | ${t.status.padEnd(9)} | ${t.amount} ${t.currency} | ${t.merchant} | ${t.reason}`
+            `${t.requested_at} | ${t.status.padEnd(12)} | ${t.amount} ${t.currency} | ${t.merchant} | ${t.reason}`
         );
         return Response.json(
           mcpResult(id, textContent(`Recent transactions:\n${lines.join("\n")}`))

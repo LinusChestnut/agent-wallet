@@ -91,6 +91,15 @@ export async function sendApprovalCard(
           content: `**Reason:** ${txn.reason}`,
         },
       },
+      {
+        tag: "note",
+        elements: [
+          {
+            tag: "plain_text",
+            content: "Tap Approve when you're ready to scan the payment QR code.",
+          },
+        ],
+      },
       { tag: "hr" },
       {
         tag: "action",
@@ -141,6 +150,115 @@ export async function sendApprovalCard(
   return data.data!.message_id;
 }
 
+/**
+ * Upload an image to Feishu and get an image_key for use in cards.
+ */
+export async function uploadImage(
+  appId: string,
+  appSecret: string,
+  imageData: Uint8Array,
+  imageType: string = "message"
+): Promise<string> {
+  const token = await getTenantToken(appId, appSecret);
+
+  const formData = new FormData();
+  formData.append("image_type", imageType);
+  formData.append("image", new Blob([imageData], { type: "image/png" }), "qr.png");
+
+  const res = await fetch(
+    "https://open.feishu.cn/open-apis/im/v1/images",
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    }
+  );
+
+  const data = await res.json() as { code: number; msg: string; data?: { image_key: string } };
+  if (data.code !== 0) {
+    throw new Error(`Feishu image upload error (${data.code}): ${data.msg}`);
+  }
+  return data.data!.image_key;
+}
+
+/**
+ * Send a QR code payment card to the user.
+ */
+export async function sendQrCard(
+  appId: string,
+  appSecret: string,
+  chatId: string,
+  txn: {
+    id: string;
+    agentName: string;
+    merchant: string;
+    amount: number;
+    currency: string;
+  },
+  imageKey: string
+): Promise<string> {
+  const token = await getTenantToken(appId, appSecret);
+
+  const card = {
+    config: { wide_screen_mode: true },
+    header: {
+      title: { tag: "plain_text", content: "Scan to Pay" },
+      template: "blue",
+    },
+    elements: [
+      {
+        tag: "div",
+        fields: [
+          {
+            is_short: true,
+            text: { tag: "lark_md", content: `**Merchant:** ${txn.merchant}` },
+          },
+          {
+            is_short: true,
+            text: { tag: "lark_md", content: `**Amount:** ${txn.amount} ${txn.currency}` },
+          },
+        ],
+      },
+      {
+        tag: "img",
+        img_key: imageKey,
+        alt: { tag: "plain_text", content: "Payment QR Code" },
+      },
+      {
+        tag: "note",
+        elements: [
+          {
+            tag: "plain_text",
+            content: "Open Alipay or WeChat Pay and scan this QR code.",
+          },
+        ],
+      },
+    ],
+  };
+
+  const res = await fetch(
+    `https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        receive_id: chatId,
+        msg_type: "interactive",
+        content: JSON.stringify(card),
+      }),
+    }
+  );
+
+  const data = await res.json() as { code: number; msg: string; data?: { message_id: string } };
+  if (data.code !== 0) {
+    throw new Error(`Feishu send QR card error (${data.code}): ${data.msg}`);
+  }
+  return data.data!.message_id;
+}
+
 export async function updateCardStatus(
   appId: string,
   appSecret: string,
@@ -157,11 +275,11 @@ export async function updateCardStatus(
   const token = await getTenantToken(appId, appSecret);
 
   const statusLabels: Record<string, { text: string; color: string }> = {
-    approved: { text: "Approved — awaiting purchase", color: "blue" },
+    approved: { text: "Approved — waiting for QR", color: "blue" },
     denied: { text: "Denied", color: "red" },
     completed: { text: `Completed — ${txn.amount} ${txn.currency}`, color: "green" },
     expired: { text: "Expired", color: "grey" },
-    failed: { text: "Failed", color: "red" },
+    failed: { text: "Cancelled", color: "red" },
   };
 
   const label = statusLabels[status] ?? { text: status, color: "grey" };
@@ -213,6 +331,9 @@ export async function updateCardStatus(
   );
 }
 
+/**
+ * Send a plain text notification to a chat.
+ */
 export async function sendNotification(
   appId: string,
   appSecret: string,
@@ -239,8 +360,7 @@ export async function sendNotification(
 
 /**
  * Verify Feishu card callback signature.
- * Feishu signs callbacks with: SHA256(timestamp + nonce + encryptKey)
- * and sends the signature in the X-Lark-Signature header.
+ * Feishu signs callbacks with: SHA256(timestamp + nonce + encryptKey + body)
  */
 export async function verifyFeishuSignature(
   timestamp: string,
@@ -266,8 +386,7 @@ export async function verifyFeishuSignature(
 }
 
 /**
- * Fallback: verify using the simple token check (for card action callbacks
- * where Feishu sends the verify token in the payload).
+ * Fallback: verify using the simple token check.
  */
 export function verifyFeishuToken(
   verifyToken: string,
