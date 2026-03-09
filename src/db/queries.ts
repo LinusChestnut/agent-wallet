@@ -48,9 +48,9 @@ export async function createAgent(
   await db.batch([
     db
       .prepare(
-        "INSERT INTO agents (id, name, api_key, wallet_id, card_token) VALUES (?, ?, ?, ?, ?)"
+        "INSERT INTO agents (id, name, api_key, wallet_id, card_token, chat_id) VALUES (?, ?, ?, ?, ?, ?)"
       )
-      .bind(agent.id, agent.name, agent.api_key, agent.wallet_id, agent.card_token),
+      .bind(agent.id, agent.name, agent.api_key, agent.wallet_id, agent.card_token, agent.chat_id),
     db
       .prepare(
         "INSERT INTO wallets (id, agent_id, balance, currency) VALUES (?, ?, ?, ?)"
@@ -171,4 +171,101 @@ export async function listAgents(db: D1Database): Promise<(Agent & { balance: nu
     )
     .all<Agent & { balance: number }>();
   return results;
+}
+
+// --- Audit Log ---
+
+export async function writeAuditLog(
+  db: D1Database,
+  entry: {
+    agentId: string;
+    transactionId?: string;
+    action: string;
+    detail?: string;
+    ipAddress?: string;
+  }
+): Promise<void> {
+  await db
+    .prepare(
+      "INSERT INTO audit_log (id, agent_id, transaction_id, action, detail, ip_address) VALUES (?, ?, ?, ?, ?, ?)"
+    )
+    .bind(
+      crypto.randomUUID(),
+      entry.agentId,
+      entry.transactionId ?? null,
+      entry.action,
+      entry.detail ?? "",
+      entry.ipAddress ?? null
+    )
+    .run();
+}
+
+// --- One-time card detail tokens ---
+
+export async function createCardDetailToken(
+  db: D1Database,
+  transactionId: string,
+  agentId: string,
+  ttlSeconds: number = 300
+): Promise<string> {
+  const token = crypto.randomUUID();
+  const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
+  await db
+    .prepare(
+      "INSERT INTO card_detail_tokens (token, transaction_id, agent_id, expires_at) VALUES (?, ?, ?, ?)"
+    )
+    .bind(token, transactionId, agentId, expiresAt)
+    .run();
+  return token;
+}
+
+export async function consumeCardDetailToken(
+  db: D1Database,
+  token: string
+): Promise<{ transactionId: string; agentId: string } | null> {
+  const row = await db
+    .prepare(
+      "SELECT * FROM card_detail_tokens WHERE token = ? AND used = 0 AND expires_at > datetime('now')"
+    )
+    .bind(token)
+    .first<{ transaction_id: string; agent_id: string }>();
+
+  if (!row) return null;
+
+  // Mark as used atomically
+  const result = await db
+    .prepare("UPDATE card_detail_tokens SET used = 1 WHERE token = ? AND used = 0")
+    .bind(token)
+    .run();
+
+  if (!result.meta.changes || result.meta.changes === 0) return null;
+
+  return { transactionId: row.transaction_id, agentId: row.agent_id };
+}
+
+// --- Feishu callback idempotency ---
+
+export async function isTransactionActionable(
+  db: D1Database,
+  transactionId: string
+): Promise<boolean> {
+  const txn = await db
+    .prepare("SELECT status FROM transactions WHERE id = ?")
+    .bind(transactionId)
+    .first<{ status: string }>();
+  return txn?.status === "pending";
+}
+
+// --- Find approved transaction by card token (for Lithic ASA) ---
+
+export async function getApprovedTransactionByCard(
+  db: D1Database,
+  cardToken: string
+): Promise<Transaction | null> {
+  return db
+    .prepare(
+      "SELECT * FROM transactions WHERE card_token = ? AND status = 'approved' ORDER BY approved_at DESC LIMIT 1"
+    )
+    .bind(cardToken)
+    .first<Transaction>();
 }

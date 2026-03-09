@@ -2,8 +2,10 @@ export interface Env {
   DB: D1Database;
   PURCHASE_TIMEOUT: DurableObjectNamespace;
   LITHIC_API_KEY: string;
+  LITHIC_WEBHOOK_SECRET: string;
   FEISHU_APP_ID: string;
   FEISHU_APP_SECRET: string;
+  FEISHU_ENCRYPT_KEY: string;
   FEISHU_VERIFY_TOKEN: string;
   ADMIN_SECRET: string;
   LOW_BALANCE_THRESHOLD: string;
@@ -25,6 +27,7 @@ export interface Agent {
   api_key: string;
   wallet_id: string;
   card_token: string;
+  chat_id: string;
   created_at: string;
 }
 

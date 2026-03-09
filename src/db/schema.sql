@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS agents (
   api_key TEXT NOT NULL UNIQUE,
   wallet_id TEXT NOT NULL,
   card_token TEXT NOT NULL,
+  chat_id TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -32,6 +33,28 @@ CREATE TABLE IF NOT EXISTS transactions (
   completed_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS audit_log (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  transaction_id TEXT,
+  action TEXT NOT NULL,
+  detail TEXT NOT NULL DEFAULT '',
+  ip_address TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS card_detail_tokens (
+  token TEXT PRIMARY KEY,
+  transaction_id TEXT NOT NULL REFERENCES transactions(id),
+  agent_id TEXT NOT NULL REFERENCES agents(id),
+  used INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_transactions_wallet ON transactions(wallet_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status);
 CREATE INDEX IF NOT EXISTS idx_agents_api_key ON agents(api_key);
+CREATE INDEX IF NOT EXISTS idx_audit_log_agent ON audit_log(agent_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_txn ON audit_log(transaction_id);
+CREATE INDEX IF NOT EXISTS idx_card_detail_tokens_txn ON card_detail_tokens(transaction_id);

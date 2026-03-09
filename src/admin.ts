@@ -35,8 +35,8 @@ export async function handleAdmin(
       chat_id?: string;
     };
 
-    if (!body.name) {
-      return Response.json({ error: "name is required" }, { status: 400 });
+    if (!body.name || !body.chat_id) {
+      return Response.json({ error: "name and chat_id are required" }, { status: 400 });
     }
 
     // Create Lithic virtual card (paused)
@@ -56,6 +56,7 @@ export async function handleAdmin(
       api_key: apiKey,
       wallet_id: walletId,
       card_token: card.token,
+      chat_id: body.chat_id!,
       created_at: new Date().toISOString(),
     };
 

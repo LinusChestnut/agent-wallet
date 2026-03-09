@@ -2,13 +2,10 @@ import { Env } from "./types";
 import { handleMcp } from "./mcp";
 import { handleFeishuWebhook } from "./webhooks/feishu";
 import { handleLithicWebhook } from "./webhooks/lithic";
+import { handleLithicASA } from "./webhooks/lithic-asa";
 import { handleAdmin } from "./admin";
 
 export { PurchaseTimeout } from "./durable-objects/timeout";
-
-// Default Feishu chat ID for notifications.
-// In production, this should come from agent config or env.
-const DEFAULT_CHAT_ID = "";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -29,10 +26,9 @@ export default {
     try {
       let response: Response;
 
-      // MCP endpoint — agent-facing
+      // MCP endpoint — agent-facing (chat_id comes from agent config, not URL)
       if (path === "/mcp") {
-        const chatId = url.searchParams.get("chat_id") ?? DEFAULT_CHAT_ID;
-        response = await handleMcp(request, env, chatId);
+        response = await handleMcp(request, env);
       }
       // Feishu card callback
       else if (path === "/webhook/feishu") {
@@ -42,6 +38,10 @@ export default {
       else if (path === "/webhook/lithic") {
         response = await handleLithicWebhook(request, env);
       }
+      // Lithic Authorization Stream (real-time auth decisioning)
+      else if (path === "/webhook/lithic-asa") {
+        response = await handleLithicASA(request, env);
+      }
       // Admin endpoints
       else if (path.startsWith("/admin")) {
         response = await handleAdmin(request, env);
@@ -50,7 +50,7 @@ export default {
       else if (path === "/" || path === "/health") {
         response = Response.json({
           service: "agent-wallet",
-          version: "0.1.0",
+          version: "0.2.0",
           status: "ok",
         });
       } else {

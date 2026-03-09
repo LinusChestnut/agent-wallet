@@ -108,15 +108,51 @@ export async function getCardDetails(
   };
 }
 
-export function verifyLithicWebhook(
+/**
+ * Verify Lithic webhook HMAC-SHA256 signature.
+ * Lithic sends the signature in the "webhook-signature" header.
+ * Format: "v1,<base64-encoded-signature>"
+ */
+export async function verifyLithicWebhook(
   payload: string,
-  signature: string,
+  signatureHeader: string,
+  webhookId: string,
+  webhookTimestamp: string,
   webhookSecret: string
-): boolean {
-  // Lithic uses HMAC-SHA256 for webhook verification
-  // In production, verify the signature here
-  // For now, we trust the payload if a secret is configured
-  if (!webhookSecret) return true;
-  // TODO: implement HMAC verification
-  return true;
+): Promise<boolean> {
+  if (!webhookSecret) return false;
+
+  // Reject webhooks older than 5 minutes
+  const ts = parseInt(webhookTimestamp);
+  if (Math.abs(Date.now() / 1000 - ts) > 5 * 60) return false;
+
+  // Lithic signs: "{webhook_id}.{timestamp}.{body}"
+  const signedContent = `${webhookId}.${webhookTimestamp}.${payload}`;
+  const encoder = new TextEncoder();
+
+  // Secret is base64-encoded, strip "whsec_" prefix if present
+  const secretStr = webhookSecret.startsWith("whsec_")
+    ? webhookSecret.slice(6)
+    : webhookSecret;
+  const secretBytes = Uint8Array.from(atob(secretStr), (c) => c.charCodeAt(0));
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    secretBytes,
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sigBytes = await crypto.subtle.sign("HMAC", key, encoder.encode(signedContent));
+  const computed = btoa(String.fromCharCode(...new Uint8Array(sigBytes)));
+
+  // signatureHeader may contain multiple signatures like "v1,<sig1> v1,<sig2>"
+  const signatures = signatureHeader.split(" ");
+  for (const sig of signatures) {
+    const parts = sig.split(",");
+    if (parts.length === 2 && parts[1] === computed) {
+      return true;
+    }
+  }
+  return false;
 }
