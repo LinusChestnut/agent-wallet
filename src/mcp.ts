@@ -1,8 +1,7 @@
 import { Env, McpRequest, McpResponse, Agent } from "./types";
 import {
   getAgentByApiKey,
-  getWalletByAgentId,
-  getTransactionsByWallet,
+  getTransactionsByAgent,
   getTransaction,
   writeAuditLog,
 } from "./db/queries";
@@ -57,7 +56,7 @@ const TOOLS = [
   {
     name: "confirm_purchase",
     description:
-      "Confirm that the payment was completed successfully (merchant page shows success). Deducts the amount from your wallet balance.",
+      "Confirm that the payment was completed successfully (merchant page shows success).",
     inputSchema: {
       type: "object",
       properties: {
@@ -69,7 +68,7 @@ const TOOLS = [
   {
     name: "cancel_purchase",
     description:
-      "Cancel an approved purchase that you no longer need. No charge is applied to your wallet.",
+      "Cancel an approved purchase that you no longer need.",
     inputSchema: {
       type: "object",
       properties: {
@@ -77,11 +76,6 @@ const TOOLS = [
       },
       required: ["transaction_id"],
     },
-  },
-  {
-    name: "get_balance",
-    description: "Check your current wallet balance.",
-    inputSchema: { type: "object", properties: {} },
   },
   {
     name: "get_transactions",
@@ -131,7 +125,6 @@ export async function handleMcp(
   const { id, method, params } = body;
   const clientIp = request.headers.get("CF-Connecting-IP") ?? undefined;
 
-  // tools/list doesn't require auth
   if (method === "tools/list") {
     return Response.json(mcpResult(id, { tools: TOOLS }));
   }
@@ -141,7 +134,7 @@ export async function handleMcp(
       mcpResult(id, {
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "agent-wallet", version: "0.3.0" },
+        serverInfo: { name: "agent-wallet", version: "0.4.0" },
       })
     );
   }
@@ -150,7 +143,6 @@ export async function handleMcp(
     return Response.json(mcpResult(id, {}));
   }
 
-  // All other methods require auth
   const agent = await authenticateAgent(env, request);
   if (!agent) {
     return Response.json(
@@ -259,7 +251,7 @@ export async function handleMcp(
         });
 
         return Response.json(
-          mcpResult(id, textContent("Purchase confirmed. Amount deducted from wallet."))
+          mcpResult(id, textContent("Purchase confirmed and recorded."))
         );
       }
 
@@ -278,27 +270,13 @@ export async function handleMcp(
         });
 
         return Response.json(
-          mcpResult(id, textContent("Purchase cancelled. No charge applied."))
-        );
-      }
-
-      case "get_balance": {
-        const wallet = await getWalletByAgentId(env.DB, agent.id);
-        if (!wallet) {
-          return Response.json(mcpResult(id, textContent("Wallet not found.")));
-        }
-        return Response.json(
-          mcpResult(id, textContent(`Balance: ${wallet.balance} ${wallet.currency}`))
+          mcpResult(id, textContent("Purchase cancelled."))
         );
       }
 
       case "get_transactions": {
         const limit = (args as { limit?: number }).limit ?? 20;
-        const wallet = await getWalletByAgentId(env.DB, agent.id);
-        if (!wallet) {
-          return Response.json(mcpResult(id, textContent("Wallet not found.")));
-        }
-        const txns = await getTransactionsByWallet(env.DB, wallet.id, limit);
+        const txns = await getTransactionsByAgent(env.DB, agent.id, limit);
         if (txns.length === 0) {
           return Response.json(mcpResult(id, textContent("No transactions yet.")));
         }

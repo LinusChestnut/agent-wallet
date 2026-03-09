@@ -6,9 +6,7 @@ export interface Env {
   FEISHU_ENCRYPT_KEY: string;
   FEISHU_VERIFY_TOKEN: string;
   ADMIN_SECRET: string;
-  LOW_BALANCE_THRESHOLD: string;
   REQUEST_TIMEOUT_MINUTES: string;
-  DAILY_SPEND_CAP: string;
 }
 
 export type TransactionStatus =
@@ -24,22 +22,12 @@ export interface Agent {
   id: string;
   name: string;
   api_key: string;
-  wallet_id: string;
   chat_id: string;
-  created_at: string;
-}
-
-export interface Wallet {
-  id: string;
-  agent_id: string;
-  balance: number;
-  currency: string;
   created_at: string;
 }
 
 export interface Transaction {
   id: string;
-  wallet_id: string;
   agent_id: string;
   amount: number;
   currency: string;

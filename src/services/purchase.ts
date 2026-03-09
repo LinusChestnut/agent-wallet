@@ -3,10 +3,7 @@ import {
   createTransaction,
   getTransaction,
   getAgentById,
-  getWalletByAgentId,
-  getDailySpend,
   updateTransactionStatus,
-  updateWalletBalance,
 } from "../db/queries";
 import { sendApprovalCard, sendQrCard, sendNotification, updateCardStatus, uploadImage } from "./feishu";
 
@@ -19,27 +16,9 @@ export async function requestPurchase(
   const currency = params.currency ?? "CNY";
   const reason = params.reason ?? "";
 
-  const wallet = await getWalletByAgentId(env.DB, agent.id);
-  if (!wallet) throw new Error("Wallet not found");
-
-  if (wallet.balance < params.amount) {
-    throw new Error(
-      `Insufficient balance: ${wallet.balance} ${currency} available, ${params.amount} ${currency} requested`
-    );
-  }
-
-  const dailySpend = await getDailySpend(env.DB, wallet.id);
-  const dailyCap = parseFloat(env.DAILY_SPEND_CAP);
-  if (dailySpend + params.amount > dailyCap) {
-    throw new Error(
-      `Daily spend cap exceeded: ${dailySpend} ${currency} spent today, cap is ${dailyCap} ${currency}`
-    );
-  }
-
   const txnId = crypto.randomUUID();
   const txn: Transaction = {
     id: txnId,
-    wallet_id: wallet.id,
     agent_id: agent.id,
     amount: params.amount,
     currency,
@@ -117,7 +96,6 @@ export async function handleApproval(
     const doStub = env.PURCHASE_TIMEOUT.get(doId);
     await doStub.fetch("https://do/cancel", { method: "POST" });
 
-    // Update Feishu card
     if (txn.feishu_message_id) {
       await updateCardStatus(env.FEISHU_APP_ID, env.FEISHU_APP_SECRET, txn.feishu_message_id, "denied", {
         agentName: agent?.name ?? "",
@@ -128,7 +106,6 @@ export async function handleApproval(
       });
     }
 
-    // Notify agent's chat channel that the purchase was denied
     if (agent?.chat_id) {
       await sendNotification(
         env.FEISHU_APP_ID,
@@ -211,7 +188,6 @@ export async function submitPaymentQr(
 
 /**
  * Agent confirms that the payment went through on the merchant side.
- * Deducts the amount from the wallet.
  */
 export async function confirmPurchase(
   env: Env,
@@ -225,23 +201,6 @@ export async function confirmPurchase(
 
   const agent = await getAgentById(env.DB, txn.agent_id);
 
-  // Deduct from wallet
-  const wallet = await getWalletByAgentId(env.DB, txn.agent_id);
-  if (wallet) {
-    await updateWalletBalance(env.DB, wallet.id, wallet.balance - txn.amount);
-
-    // Check low balance threshold
-    const threshold = parseFloat(env.LOW_BALANCE_THRESHOLD);
-    if (wallet.balance - txn.amount < threshold && agent?.chat_id) {
-      await sendNotification(
-        env.FEISHU_APP_ID,
-        env.FEISHU_APP_SECRET,
-        agent.chat_id,
-        `⚠️ Low balance warning: ${wallet.balance - txn.amount} ${wallet.currency} remaining.`
-      );
-    }
-  }
-
   await updateTransactionStatus(env.DB, transactionId, "completed", {
     completed_at: new Date().toISOString(),
   });
@@ -250,6 +209,7 @@ export async function confirmPurchase(
   const doId = env.PURCHASE_TIMEOUT.idFromName(transactionId);
   const doStub = env.PURCHASE_TIMEOUT.get(doId);
   await doStub.fetch("https://do/cancel", { method: "POST" });
+
   if (txn.feishu_message_id) {
     await updateCardStatus(env.FEISHU_APP_ID, env.FEISHU_APP_SECRET, txn.feishu_message_id, "completed", {
       agentName: agent?.name ?? "",

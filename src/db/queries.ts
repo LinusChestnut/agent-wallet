@@ -1,4 +1,4 @@
-import { Agent, Transaction, TransactionStatus, Wallet } from "../types";
+import { Agent, Transaction, TransactionStatus } from "../types";
 
 export async function getAgentByApiKey(
   db: D1Database,
@@ -20,54 +20,23 @@ export async function getAgentById(
     .first<Agent>();
 }
 
-export async function getWallet(
-  db: D1Database,
-  walletId: string
-): Promise<Wallet | null> {
-  return db
-    .prepare("SELECT * FROM wallets WHERE id = ?")
-    .bind(walletId)
-    .first<Wallet>();
-}
-
-export async function getWalletByAgentId(
-  db: D1Database,
-  agentId: string
-): Promise<Wallet | null> {
-  return db
-    .prepare("SELECT * FROM wallets WHERE agent_id = ?")
-    .bind(agentId)
-    .first<Wallet>();
-}
-
 export async function createAgent(
   db: D1Database,
-  agent: Agent,
-  wallet: Wallet
-): Promise<void> {
-  await db.batch([
-    db
-      .prepare(
-        "INSERT INTO agents (id, name, api_key, wallet_id, chat_id) VALUES (?, ?, ?, ?, ?)"
-      )
-      .bind(agent.id, agent.name, agent.api_key, agent.wallet_id, agent.chat_id),
-    db
-      .prepare(
-        "INSERT INTO wallets (id, agent_id, balance, currency) VALUES (?, ?, ?, ?)"
-      )
-      .bind(wallet.id, wallet.agent_id, wallet.balance, wallet.currency),
-  ]);
-}
-
-export async function updateWalletBalance(
-  db: D1Database,
-  walletId: string,
-  newBalance: number
+  agent: Agent
 ): Promise<void> {
   await db
-    .prepare("UPDATE wallets SET balance = ? WHERE id = ?")
-    .bind(newBalance, walletId)
+    .prepare(
+      "INSERT INTO agents (id, name, api_key, chat_id) VALUES (?, ?, ?, ?)"
+    )
+    .bind(agent.id, agent.name, agent.api_key, agent.chat_id)
     .run();
+}
+
+export async function listAgents(db: D1Database): Promise<Agent[]> {
+  const { results } = await db
+    .prepare("SELECT * FROM agents ORDER BY created_at")
+    .all<Agent>();
+  return results;
 }
 
 export async function createTransaction(
@@ -77,12 +46,11 @@ export async function createTransaction(
   await db
     .prepare(
       `INSERT INTO transactions
-       (id, wallet_id, agent_id, amount, currency, merchant, reason, status, feishu_message_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (id, agent_id, amount, currency, merchant, reason, status, feishu_message_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       txn.id,
-      txn.wallet_id,
       txn.agent_id,
       txn.amount,
       txn.currency,
@@ -133,42 +101,17 @@ export async function updateTransactionStatus(
     .run();
 }
 
-export async function getTransactionsByWallet(
+export async function getTransactionsByAgent(
   db: D1Database,
-  walletId: string,
+  agentId: string,
   limit = 20
 ): Promise<Transaction[]> {
   const { results } = await db
     .prepare(
-      "SELECT * FROM transactions WHERE wallet_id = ? ORDER BY requested_at DESC LIMIT ?"
+      "SELECT * FROM transactions WHERE agent_id = ? ORDER BY requested_at DESC LIMIT ?"
     )
-    .bind(walletId, limit)
+    .bind(agentId, limit)
     .all<Transaction>();
-  return results;
-}
-
-export async function getDailySpend(
-  db: D1Database,
-  walletId: string
-): Promise<number> {
-  const today = new Date().toISOString().slice(0, 10);
-  const row = await db
-    .prepare(
-      `SELECT COALESCE(SUM(amount), 0) as total FROM transactions
-       WHERE wallet_id = ? AND status IN ('approved', 'qr_submitted', 'completed')
-       AND requested_at >= ?`
-    )
-    .bind(walletId, today + "T00:00:00Z")
-    .first<{ total: number }>();
-  return row?.total ?? 0;
-}
-
-export async function listAgents(db: D1Database): Promise<(Agent & { balance: number })[]> {
-  const { results } = await db
-    .prepare(
-      `SELECT a.*, w.balance FROM agents a JOIN wallets w ON w.agent_id = a.id ORDER BY a.created_at`
-    )
-    .all<Agent & { balance: number }>();
   return results;
 }
 
