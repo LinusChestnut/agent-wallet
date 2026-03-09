@@ -20,6 +20,7 @@ export async function requestPurchase(
   const txn: Transaction = {
     id: txnId,
     agent_id: agent.id,
+    chat_id: chatId,
     amount: params.amount,
     currency,
     merchant: params.merchant,
@@ -106,11 +107,11 @@ export async function handleApproval(
       });
     }
 
-    if (agent?.chat_id) {
+    if (txn.chat_id) {
       await sendNotification(
         env.FEISHU_APP_ID,
         env.FEISHU_APP_SECRET,
-        agent.chat_id,
+        txn.chat_id,
         `Purchase denied.\nTransaction: ${transactionId}\nMerchant: ${txn.merchant}\nAmount: ${txn.amount} ${txn.currency}\n\n⚠️ Verify status via get_purchase_status before taking action.`
       );
     }
@@ -166,11 +167,11 @@ export async function submitPaymentQr(
   const imageData = Uint8Array.from(atob(qrImageBase64), (c) => c.charCodeAt(0));
   const imageKey = await uploadImage(env.FEISHU_APP_ID, env.FEISHU_APP_SECRET, imageData);
 
-  // Send QR card to the user's chat
+  // Send QR card to the user's chat (same chat the request came from)
   await sendQrCard(
     env.FEISHU_APP_ID,
     env.FEISHU_APP_SECRET,
-    agent.chat_id,
+    txn.chat_id,
     {
       id: transactionId,
       agentName: agent.name,

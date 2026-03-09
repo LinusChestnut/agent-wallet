@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS agents (
 CREATE TABLE IF NOT EXISTS transactions (
   id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL REFERENCES agents(id),
+  chat_id TEXT NOT NULL,
   amount REAL NOT NULL,
   currency TEXT NOT NULL DEFAULT 'CNY',
   merchant TEXT NOT NULL,

@@ -24,6 +24,7 @@ const TOOLS = [
         amount: { type: "number", description: "Purchase amount" },
         currency: { type: "string", description: "Currency code (default: CNY)" },
         reason: { type: "string", description: "Why you need to make this purchase" },
+        chat_id: { type: "string", description: "Feishu chat ID to send approval card and notifications to. Defaults to agent's registered chat_id." },
       },
       required: ["merchant", "amount"],
     },
@@ -160,16 +161,18 @@ export async function handleMcp(
   try {
     switch (toolName) {
       case "request_purchase": {
-        const { merchant, amount, currency, reason } = args as {
+        const { merchant, amount, currency, reason, chat_id } = args as {
           merchant: string;
           amount: number;
           currency?: string;
           reason?: string;
+          chat_id?: string;
         };
         if (!merchant || !amount) {
           return Response.json(mcpError(id, -32602, "merchant and amount are required"));
         }
-        const result = await requestPurchase(env, agent, agent.chat_id, {
+        const activeChatId = chat_id ?? agent.chat_id;
+        const result = await requestPurchase(env, agent, activeChatId, {
           merchant,
           amount,
           currency,

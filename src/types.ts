@@ -29,6 +29,7 @@ export interface Agent {
 export interface Transaction {
   id: string;
   agent_id: string;
+  chat_id: string;
   amount: number;
   currency: string;
   merchant: string;

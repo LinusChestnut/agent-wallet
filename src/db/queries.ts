@@ -46,12 +46,13 @@ export async function createTransaction(
   await db
     .prepare(
       `INSERT INTO transactions
-       (id, agent_id, amount, currency, merchant, reason, status, feishu_message_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+       (id, agent_id, chat_id, amount, currency, merchant, reason, status, feishu_message_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       txn.id,
       txn.agent_id,
+      txn.chat_id,
       txn.amount,
       txn.currency,
       txn.merchant,
