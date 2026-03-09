@@ -84,8 +84,10 @@ export async function handleFeishuWebhook(
     actionData.transaction_id
   );
   if (!actionable) {
-    // Already processed — return OK to avoid Feishu retries, but do nothing
-    return new Response("OK");
+    // Already processed — return toast to avoid Feishu retries
+    return Response.json({
+      toast: { type: "info", content: "Already processed." },
+    });
   }
 
   const approved = actionData.action === "approve";
@@ -100,10 +102,17 @@ export async function handleFeishuWebhook(
 
   try {
     await handleApproval(env, actionData.transaction_id, approved);
-    return new Response("OK");
+    return Response.json({
+      toast: {
+        type: approved ? "success" : "info",
+        content: approved ? "Approved — agent will proceed." : "Denied.",
+      },
+    });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error("Feishu callback error:", message);
-    return new Response(message, { status: 500 });
+    return Response.json({
+      toast: { type: "error", content: "Something went wrong. Try again." },
+    });
   }
 }
