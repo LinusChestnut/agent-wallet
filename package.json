@@ -1,0 +1,17 @@
+{
+  "name": "agent-wallet",
+  "version": "0.1.0",
+  "description": "Open-source virtual card wallet for AI agents. MCP interface, Lithic cards, Feishu approval flow.",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:init": "wrangler d1 execute agent-wallet-db --local --file=src/db/schema.sql",
+    "db:init:remote": "wrangler d1 execute agent-wallet-db --remote --file=src/db/schema.sql"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250301.0",
+    "typescript": "^5.7.0",
+    "wrangler": "^4.0.0"
+  }
+}

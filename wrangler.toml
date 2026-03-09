@@ -1,0 +1,29 @@
+name = "agent-wallet"
+main = "src/index.ts"
+compatibility_date = "2025-03-01"
+
+[vars]
+LOW_BALANCE_THRESHOLD = "10"
+REQUEST_TIMEOUT_MINUTES = "10"
+DAILY_SPEND_CAP = "100"
+
+# Secrets (set via `wrangler secret put`):
+# LITHIC_API_KEY
+# FEISHU_APP_ID
+# FEISHU_APP_SECRET
+# FEISHU_VERIFY_TOKEN
+# ADMIN_SECRET
+
+[[d1_databases]]
+binding = "DB"
+database_name = "agent-wallet-db"
+database_id = ""  # Fill after `wrangler d1 create agent-wallet-db`
+
+[durable_objects]
+bindings = [
+  { name = "PURCHASE_TIMEOUT", class_name = "PurchaseTimeout" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["PurchaseTimeout"]
