@@ -3,8 +3,33 @@ import { verifyFeishuSignature, verifyFeishuToken } from "../services/feishu";
 import { handleApproval } from "../services/purchase";
 import { isTransactionActionable, writeAuditLog } from "../db/queries";
 
-interface FeishuCardAction {
-  open_ids: string[];
+interface FeishuChallenge {
+  challenge: string;
+  token: string;
+  type: string;
+}
+
+// New format (card.action.trigger)
+interface FeishuCardCallbackV2 {
+  schema: string;
+  header: {
+    event_id: string;
+    event_type: string;
+    token: string;
+  };
+  event: {
+    operator: {
+      open_id: string;
+    };
+    action: {
+      tag: string;
+      value: Record<string, string>;
+    };
+  };
+}
+
+// Legacy format
+interface FeishuCardCallbackLegacy {
   open_id: string;
   token: string;
   action: {
@@ -13,10 +38,47 @@ interface FeishuCardAction {
   };
 }
 
-interface FeishuChallenge {
-  challenge: string;
-  token: string;
-  type: string;
+function parseActionData(
+  parsed: Record<string, unknown>
+): { action: string; transaction_id: string; operatorId: string } | null {
+  // New format: card.action.trigger (schema 2.0)
+  if (parsed.schema === "2.0" || parsed.header) {
+    const v2 = parsed as unknown as FeishuCardCallbackV2;
+    const value = v2.event?.action?.value;
+    if (!value?.action || !value?.transaction_id) return null;
+    return {
+      action: value.action,
+      transaction_id: value.transaction_id,
+      operatorId: v2.event?.operator?.open_id ?? "unknown",
+    };
+  }
+
+  // Legacy format: action.value is a JSON string
+  const legacy = parsed as unknown as FeishuCardCallbackLegacy;
+  if (!legacy.action?.value) return null;
+  try {
+    const value =
+      typeof legacy.action.value === "string"
+        ? JSON.parse(legacy.action.value)
+        : legacy.action.value;
+    return {
+      action: value.action,
+      transaction_id: value.transaction_id,
+      operatorId: legacy.open_id ?? "unknown",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getToken(parsed: Record<string, unknown>): string | undefined {
+  // New format
+  if (parsed.header) {
+    const header = parsed.header as Record<string, unknown>;
+    return header.token as string | undefined;
+  }
+  // Legacy format
+  return parsed.token as string | undefined;
 }
 
 export async function handleFeishuWebhook(
@@ -28,7 +90,10 @@ export async function handleFeishuWebhook(
   try {
     parsed = JSON.parse(body);
   } catch {
-    return new Response("Invalid JSON", { status: 400 });
+    return Response.json(
+      { toast: { type: "error", content: "Invalid request." } },
+      { status: 400 }
+    );
   }
 
   // Handle URL verification challenge
@@ -59,23 +124,18 @@ export async function handleFeishuWebhook(
     }
   } else {
     // Fallback: verify token in payload
-    const action = parsed as unknown as FeishuCardAction;
-    if (!verifyFeishuToken(env.FEISHU_VERIFY_TOKEN, { token: action.token })) {
+    const token = getToken(parsed);
+    if (!verifyFeishuToken(env.FEISHU_VERIFY_TOKEN, { token })) {
       return new Response("Invalid token", { status: 403 });
     }
   }
 
-  // Handle card action callback
-  const action = parsed as unknown as FeishuCardAction;
-  if (!action.action?.value) {
-    return new Response("No action value", { status: 400 });
-  }
-
-  let actionData: { action: string; transaction_id: string };
-  try {
-    actionData = JSON.parse(action.action.value);
-  } catch {
-    return new Response("Invalid action value", { status: 400 });
+  // Parse card action data (supports both new and legacy formats)
+  const actionData = parseActionData(parsed);
+  if (!actionData) {
+    return Response.json({
+      toast: { type: "error", content: "Invalid action." },
+    });
   }
 
   // Idempotency: check if transaction is still actionable (pending)
@@ -84,7 +144,6 @@ export async function handleFeishuWebhook(
     actionData.transaction_id
   );
   if (!actionable) {
-    // Already processed — return toast to avoid Feishu retries
     return Response.json({
       toast: { type: "info", content: "Already processed." },
     });
@@ -97,7 +156,7 @@ export async function handleFeishuWebhook(
     agentId: "feishu_callback",
     transactionId: actionData.transaction_id,
     action: approved ? "human_approve" : "human_deny",
-    detail: `operator=${action.open_id ?? "unknown"}`,
+    detail: `operator=${actionData.operatorId}`,
   });
 
   try {

@@ -108,19 +108,19 @@ export async function sendApprovalCard(
             tag: "button",
             text: { tag: "plain_text", content: "Approve" },
             type: "primary",
-            value: JSON.stringify({
+            value: {
               action: "approve",
               transaction_id: txn.id,
-            }),
+            },
           },
           {
             tag: "button",
             text: { tag: "plain_text", content: "Deny" },
             type: "danger",
-            value: JSON.stringify({
+            value: {
               action: "deny",
               transaction_id: txn.id,
-            }),
+            },
           },
         ],
       },
