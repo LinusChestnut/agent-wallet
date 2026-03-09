@@ -83,7 +83,8 @@ function getToken(parsed: Record<string, unknown>): string | undefined {
 
 export async function handleFeishuWebhook(
   request: Request,
-  env: Env
+  env: Env,
+  ctx: ExecutionContext
 ): Promise<Response> {
   const body = await request.text();
   let parsed: Record<string, unknown>;
@@ -151,27 +152,29 @@ export async function handleFeishuWebhook(
 
   const approved = actionData.action === "approve";
 
-  // Audit log the approval/denial
-  await writeAuditLog(env.DB, {
-    agentId: "feishu_callback",
-    transactionId: actionData.transaction_id,
-    action: approved ? "human_approve" : "human_deny",
-    detail: `operator=${actionData.operatorId}`,
-  });
+  // Respond to Feishu immediately — do heavy work in background.
+  // This avoids Feishu's 3-second callback timeout.
+  ctx.waitUntil(
+    (async () => {
+      try {
+        await writeAuditLog(env.DB, {
+          agentId: "feishu_callback",
+          transactionId: actionData.transaction_id,
+          action: approved ? "human_approve" : "human_deny",
+          detail: `operator=${actionData.operatorId}`,
+        });
+        await handleApproval(env, actionData.transaction_id, approved);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : "Unknown error";
+        console.error("Feishu callback background error:", message);
+      }
+    })()
+  );
 
-  try {
-    await handleApproval(env, actionData.transaction_id, approved);
-    return Response.json({
-      toast: {
-        type: approved ? "success" : "info",
-        content: approved ? "Approved — agent will proceed." : "Denied.",
-      },
-    });
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    console.error("Feishu callback error:", message);
-    return Response.json({
-      toast: { type: "error", content: "Something went wrong. Try again." },
-    });
-  }
+  return Response.json({
+    toast: {
+      type: approved ? "success" : "info",
+      content: approved ? "Approved — agent will proceed." : "Denied.",
+    },
+  });
 }

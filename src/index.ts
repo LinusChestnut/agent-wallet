@@ -6,7 +6,7 @@ import { handleAdmin } from "./admin";
 export { PurchaseTimeout } from "./durable-objects/timeout";
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
 
@@ -30,7 +30,7 @@ export default {
       }
       // Feishu card callback
       else if (path === "/webhook/feishu") {
-        response = await handleFeishuWebhook(request, env);
+        response = await handleFeishuWebhook(request, env, ctx);
       }
       // Admin endpoints
       else if (path.startsWith("/admin")) {
